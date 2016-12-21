@@ -1,0 +1,196 @@
+---
+title: "Practical Machine Learning Final Project"
+author: "Jeremias T. Lalis"
+date: "December 20, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behaviour, or because they are tech geeks.
+
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: <http://groupware.les.inf.puc-rio.br/har> (see the section on the Weight Lifting Exercise Dataset).
+
+## Data
+The training data for this project are available here: 
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv>
+
+The test data are available here: 
+<https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>
+
+## Method
+### Data Preprocessing
+
+The data was cleaned from any variables that mostly consists of "NA" or blank fields:
+
+```{r}
+library(caret)
+training <- read.csv('pml-training.csv')
+
+nums <- sapply(training, is.numeric)
+training_num <- training[ , nums]  
+training_num <- training_num[ , apply(training_num, 2,
+             function(x) !any(is.na(x)))]
+training_num$class <- training$class
+```
+
+The training data was split into training ant test sets - 70% vs 30%:
+
+```{r}
+set.seed(123)
+samp <- sample(2, nrow(training), replace = TRUE,
+                  prob = c(0.7,0.3))
+trainSet_num <- training_num[samp == 1,]
+testSet_num  <- training_num[samp == 2,]
+```
+
+All numeric variables were standardized in the training set using the preProcess() finction in caret:
+
+```{r}
+preObj <- preProcess(trainSet_num[,1:56], 
+                        method=c("center","scale"))
+trainSet_st <- predict(preObj, trainSet_num[,1:56])
+trainSet_st$class <- trainSet_num$class
+```
+
+The test set was standardized using the parameters obtained by standardizing the training set:
+
+```{r}
+testSet_st <- predict(preObj, testSet_num[,1:56])
+testSet_st$class <- testSet_num$class
+```
+
+### Model Building
+#### Decision Tree - rpart
+- Decision Tree model - decision tree using rpart with caret
+- Predictors were obtained from a PCA on the numeric variables that captures 80% of the variance
+
+```{r}
+library(rpart)
+library(rattle)
+
+pca <- preProcess(trainSet_st[,1:56], method = "pca",
+                     thresh = 0.8)
+trainPC <- predict(pca, trainSet_st[,1:56])
+
+set.seed(123)
+modelFit <- train(trainSet_st$class ~., method = "rpart", 
+                     data = trainPC)
+modelFit$finalModel
+
+fancyRpartPlot(modelFit$finalModel, main="Decision Tree")
+
+trainPred <- predict(modelFit, trainPC)
+confusionMatrix(trainPred, trainSet_num$class)  
+
+testPC <- predict(pca, testSet_st[,1:56])
+prediction <- predict(modelFit, testPC)
+confusionMatrix(testSet_num$class, prediction)  
+
+model_summary <- data.frame("model" = character(3), "accuracy" = numeric(3))
+model_summary$model <- as.character(model_summary$model)
+model_summary$model[1] <- "DT"
+model_summary$accuracy[1] <- round(confusionMatrix(testSet_num$class, prediction)$overall[[1]], 2)
+```
+
+#### Support Vector Machine - 5-fold Cross Validation
+- Predictors are obtained from a PCA on the numeric variables with 5 components
+- trainControl() function set to 5-fold cross validation
+
+```{r}
+## PCA with 5 components
+pca_svm <- preProcess(trainSet_st[,1:56], 
+                         method = "pca", pcaComp = 5)
+trainPC_svm <- predict(pca_svm, trainSet_st[,1:56])
+
+## Setting up trainControl() function
+tc = trainControl(method = "cv", number = 5)
+
+## Training process
+set.seed(825)
+svmFit <- train(trainSet_st$class ~ ., data = trainPC_svm, 
+                method = "svmRadial", trControl = tc)
+svmFit$finalModel
+
+## Predicting on test data
+testPC_svm <- predict(pca_svm, testSet_st[,1:56])
+prediction_svm <- predict(svmFit, testPC_svm)
+
+## Correct predictions
+predRight_svm <- prediction_svm == testSet_st$class
+
+## Confusion Matrix on the test set
+confusionMatrix(prediction_svm, testSet_st$class)
+
+model_summary$model[2] <- "SVM"
+model_summary$accuracy[2] <- round(confusionMatrix(prediction_svm, testSet_st$class)$overall[[1]], 2)
+
+## Plots
+plotSVM <- qplot(PC1, PC2, data = testPC_svm, colour = predRight_svm, main = "Prediction on test set - SVM " )
+
+
+plotSVM2 <- qplot(PC1, PC3, data = testPC_svm, colour = predRight_svm, main = "Prediction on test set - SVM " )
+plotSVM3 <- qplot(PC2, PC3, data = testPC_svm, colour = predRight_svm, main = "Prediction on test set - SVM " )
+plotSVM ; plotSVM2 ; plotSVM3
+
+plotSVM_pred <- qplot(PC1, PC2, data = testPC_svm, colour = prediction_svm, main = "Prediction on test set - SVM by groups" )
+plotSVM_pred2 <- qplot(PC1, PC3, data = testPC_svm, colour = prediction_svm, main = "Prediction on test set - SVM by groups" )
+plotSVM_pred3 <- qplot(PC2, PC3, data = testPC_svm, colour = prediction_svm, main = "Prediction on test set - SVM by groups" )
+plotSVM_pred ; plotSVM_pred2; plotSVM_pred3
+```
+
+#### Random Forest - 5-fold Cross Validation
+- Predictors are obtained from a PCA on the numeric variables with 5 components
+- trainControl() function set to 5-fold cross validation
+
+```{r}
+library(randomForest)
+## PCA
+pca_rf2 <- preProcess(trainSet_st[,1:56], 
+                         method = "pca", pcaComp = 5)
+trainPC_rf2 <- predict(pca_rf2, trainSet_st[,1:56])
+
+## Setting up trainControl() function
+tc = trainControl(method = "cv", number = 5) 
+
+# 5-fold cross validation
+
+##Training process
+set.seed(17)
+modelFit_rf2 <- train(trainSet_st$class ~ ., 
+                         method = "rf",
+                         trainControl = tc, 
+                         data = trainPC_rf2)
+modelFit_rf2$finalModel
+
+## Prediction on the test set
+testPC_rf2 <- predict(pca_rf2, testSet_st[,1:56])
+prediction_rf2 <- predict(modelFit_rf2, testPC_rf2)
+
+## Correct classifications
+predRight_rf2 <- prediction_rf2 == testSet_st$class
+
+## ConfusionMatrix on the test set
+confusionMatrix(prediction_rf2, testSet_st$class)
+
+model_summary$model[3] <- "RF"
+model_summary$accuracy[3] <- round(confusionMatrix(prediction_rf2, testSet_st$class)$overall[[1]], 2)
+```
+
+### Selection of Best Model
+```{r}
+library(ggplot2)
+p <- ggplot(model_summary, aes(x=model, y=accuracy, group = 1)) +
+      geom_line(colour = "blue") + 
+      geom_point(colour = "blue") +
+      geom_text(aes(label = accuracy), hjust = 1.5, vjust = .5, colour = "red") +
+      ggtitle("Model Accuracy (Out-of-the-Sample)")
+
+print(p)
+```
+
+Figure above shows that the RF model with five (5) principal components shows the best predictive power at 86%, followed by Support Vector Machine-model and Decision Tree-model at 60% and 46%, respectively.
